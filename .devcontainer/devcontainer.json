@@ -1,0 +1,33 @@
+{
+  "name": "test",
+  // Select between image and build propieties to pull or build the image.
+  // "image": "docker.io/espressif/idf-rust:esp32c6_latest",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "args": {
+      "CONTAINER_USER": "esp",
+      "CONTAINER_GROUP": "esp",
+      "ESP_BOARD": "esp32c6"
+    }
+  },
+  // https://github.com/serialport/serialport-rs/issues/153
+  "runArgs": [
+    "--mount",
+    "type=bind,source=/run/udev,target=/run/udev,readonly"
+  ],
+  "customizations": {
+    "jetbrains": {
+      "extensions": [
+        "IdeaVIM",
+        "com.github.jozott00.wokwiintellij",
+        "CargoCommandRunConfiguration",
+      ]
+    }
+  },
+  "forwardPorts": [
+    3333,
+    8000
+  ],
+  "workspaceMount": "source=${localWorkspaceFolder},target=/home/esp/test,type=bind,consistency=cached",
+  "workspaceFolder": "/home/esp/test"
+}
