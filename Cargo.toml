@@ -2,7 +2,7 @@
 name = "test"
 version = "0.1.0"
 authors = ["appuser"]
-edition = "2024"
+edition = "2021"
 resolver = "2"
 rust-version = "1.77"
 
