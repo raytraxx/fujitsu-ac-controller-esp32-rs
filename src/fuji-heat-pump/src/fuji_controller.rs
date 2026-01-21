@@ -1,5 +1,8 @@
 use std::error::Error;
-use std::io::{Read, Write};
+use std::sync::Mutex;
+use std::thread;
+use std::thread::sleep;
+use std::time::Duration;
 use crate::fuji_controller::ControllerType::Primary;
 use crate::fuji_frame::enums::{DestinationAddress, FanMode, FrameACMode, PowerStatus};
 use crate::fuji_frame::frame::{ErrorPayload, FujiFrame, FujiPayload, LoginPayload, StatusPayload};
@@ -21,32 +24,32 @@ pub enum ACMode {
 }
 
 pub trait FujiUartDriver<E> where E: Error {
-    fn send_frame(&mut self, frame: &[u8; 8]) -> Result<usize, E>;
-    fn read_frame(&mut self, buf: &mut [u8]) -> Result<usize, E>;
+    fn send_frame(&self, frame: &[u8; 8]) -> Result<usize, E>;
+    fn read_frame(&self, buf: &mut [u8]) -> Result<usize, E>;
 }
 
 pub struct FujiController<E> {
     controller_type: ControllerType,
-    ac_status: StatusPayload,
 
     setpoint_temperature: u8,
     ac_mode: FrameACMode,
     power_status: PowerStatus,
     fan_mode: FanMode,
+    economy_mode: bool,
 
     probe_temperature: Option<u8>,
-    uart: Box<dyn FujiUartDriver<E>>
+    uart: Box<dyn FujiUartDriver<E> + Send + Sync>,
 }
 
 impl<E> FujiController<E> where E: Error {
-    pub fn new(controller_type: ControllerType, uart: Box<dyn FujiUartDriver<E>>) -> FujiController<E> {
+    pub fn new(controller_type: ControllerType, uart: Box<dyn FujiUartDriver<E> + Send + Sync>) -> FujiController<E> {
         FujiController {
             controller_type,
-            ac_status: StatusPayload::default(),
             setpoint_temperature: 20,
             ac_mode: FrameACMode::Auto,
             power_status: PowerStatus::On,
             fan_mode: FanMode::Auto,
+            economy_mode: false,
             probe_temperature: None,
             uart,
         }
@@ -84,6 +87,10 @@ impl<E> FujiController<E> where E: Error {
         self.fan_mode = mode;
     }
 
+    pub fn set_economy_mode(&mut self, mode: bool) {
+        self.economy_mode = mode;
+    }
+
     pub fn set_setpoint_temperature(&mut self, temperature: u8) {
         if temperature >= 16 && temperature <= 29 {
             self.setpoint_temperature = temperature;
@@ -94,29 +101,58 @@ impl<E> FujiController<E> where E: Error {
         self.probe_temperature = Some(temperature);
     }
 
-    fn handle_incoming_frame(&mut self, frame: FujiFrame) {
+    fn wait(&self) {
+        sleep(Duration::from_millis(60))
+    }
+
+    pub fn spawn_thread(&self) -> Mutex<&FujiController<E>> {
+        let mutex = Mutex::new(self);
+
+        thread::spawn(|| {
+            let mut buffer = [0u8; 8];
+
+            loop {
+                if let Ok(res) = self.uart.read_frame(&mut buffer) && res == 8 {
+                    let frame = FujiFrame::decode(buffer);
+                    let response = self.handle_incoming_frame(frame);
+                    match response {
+                        None => {}
+                        Some(r) => {
+                            self.wait();
+                            _ = self.uart.send_frame(&r.encode());
+                        }
+                    }
+                }
+
+                self.wait();
+            }
+        });
+
+        mutex
+    }
+
+    fn handle_incoming_frame(&self, frame: FujiFrame) -> Option<FujiFrame> {
         if (frame.destination as u8) != (self.controller_type as u8) {
-            return
+            return None
         }
 
         match frame.payload {
             FujiPayload::Status(payload) => {
-                self.ac_status = payload;
                 if !payload.controller_present {
                     if self.controller_type == Primary {
-                        self.send_logged_in_frame()
+                        Some(self.make_logged_in_frame())
                     } else {
-                        self.send_secondary_frame()
+                        Some(self.make_secondary_frame())
                     }
                 } else if payload.has_error {
-                    self.send_error_query()
+                    Some(self.make_error_query())
                 } else {
-
+                    Some(self.make_status_frame())
                 }
             }
-            FujiPayload::Login(_) => {}
-            FujiPayload::Error(_) => {}
-            FujiPayload::Unknown(_) => {}
+            FujiPayload::Login(_) => {None}
+            FujiPayload::Error(_) => {None}
+            FujiPayload::Unknown(_) => {None}
         }
     }
 
@@ -128,16 +164,37 @@ impl<E> FujiController<E> where E: Error {
         }
     }
 
-    fn send_logged_in_frame(&self) {
-        let frame = FujiFrame {
+    fn make_status_frame(&self) -> FujiFrame {
+        FujiFrame {
+            unknown_bit: false,
+            write_bit: true,
+            payload: FujiPayload::Status(StatusPayload {
+                controller_present: true,
+                magic_mask: 0,
+                ac_mode: self.ac_mode,
+                power_status: self.power_status,
+                fan_mode: self.fan_mode,
+                setpoint_temperature: self.setpoint_temperature,
+                probe_temperature: self.probe_temperature.unwrap_or_default(),
+                has_error: false,
+                swing_step: false,
+                economy_mode: self.economy_mode,
+                swing: false
+            }),
+            ..self.make_frame()
+        }
+    }
+
+    fn make_logged_in_frame(&self) -> FujiFrame {
+        FujiFrame {
             unknown_bit: true,
             payload: FujiPayload::Login(LoginPayload::default()),
             ..self.make_frame()
-        };
+        }
     }
 
-    fn send_secondary_frame(&self) {
-        let frame = FujiFrame {
+    fn make_secondary_frame(&self) -> FujiFrame {
+        FujiFrame {
             unknown_bit: true,
             payload: FujiPayload::Status(StatusPayload {
                 controller_present: true,
@@ -145,13 +202,13 @@ impl<E> FujiController<E> where E: Error {
                 ..Default::default()
             }),
             ..self.make_frame()
-        };
+        }
     }
 
-    fn send_error_query(&self) {
-        let frame = FujiFrame {
+    fn make_error_query(&self) -> FujiFrame {
+        FujiFrame {
             payload: FujiPayload::Error(ErrorPayload::default()),
             ..self.make_frame()
-        };
+        }
     }
 }

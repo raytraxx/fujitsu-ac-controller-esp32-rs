@@ -1,24 +1,23 @@
-use esp_idf_svc::hal::delay::{Delay, FreeRtos};
+use std::sync::Mutex;
+use std::thread::sleep;
+use std::time::Duration;
 use fuji_heat_pump::fuji_controller::{ACMode, ControllerType, FujiController, FujiUartDriver};
 
 use esp_idf_svc::hal::gpio;
-use esp_idf_svc::hal::gpio::{PinDriver, Pins};
 use esp_idf_svc::hal::peripherals::Peripherals;
-use esp_idf_svc::hal::task::*;
 use esp_idf_svc::hal::uart::*;
 use esp_idf_svc::hal::units::*;
-use esp_idf_svc::io::asynch::Read;
-use esp_idf_svc::sys::EspError;
+use esp_idf_svc::sys::{xTaskCreatePinnedToCore, EspError};
 
 struct Driver<'a> {
     uart: UartDriver<'a>
 }
 
 impl<'a> FujiUartDriver<EspError> for Driver<'a> {
-    fn send_frame(&mut self, frame: &[u8; 8]) -> Result<usize, EspError> {
+    fn send_frame(&self, frame: &[u8; 8]) -> Result<usize, EspError> {
         self.uart.write(frame)
     }
-    fn read_frame(&mut self, buf: &mut [u8]) -> Result<usize, EspError> {
+    fn read_frame(&self, buf: &mut [u8]) -> Result<usize, EspError> {
         self.uart.read(buf, 200)
     }
 }
@@ -30,6 +29,10 @@ fn main() {
 
     // Bind the log crate to the ESP Logging facilities
     esp_idf_svc::log::EspLogger::initialize_default();
+
+
+    //controller.set_mode(ACMode::Cool);
+    //uart.read()
 
     let peripherals = Peripherals::take().expect("Failed to take Peripherals");
     let tx = peripherals.pins.gpio12;
@@ -51,7 +54,11 @@ fn main() {
 
     let fuji_driver = Box::new(Driver { uart });
     let mut controller = FujiController::new(ControllerType::Primary, fuji_driver);
-    //controller.set_mode(ACMode::Cool);
+    let mutex = controller.spawn_thread();
+
+    let mut c = mutex.lock().unwrap();
+    c.set_mode(ACMode::Auto);
+    drop(c);
 
     log::info!("Hello, world!");
 }

@@ -17,6 +17,7 @@
   ],
   "customizations": {
     "jetbrains": {
+      "backend": "RustRover",
       "extensions": [
         "IdeaVIM",
         "com.github.jozott00.wokwiintellij",
